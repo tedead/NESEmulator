@@ -46,7 +46,34 @@ public sealed class MainForm : Form
         BuildLayout();
 
         _runTimer.Tick += RunTimer_Tick;
+
+        KeyPreview = true;
+        KeyDown += OnKeyDown;
+        KeyUp   += OnKeyUp;
+
         UpdateUi();
+    }
+
+    // ── Controller key mapping ────────────────────────────────────────────────
+    // A=Z  B=X  Select=RShift  Start=Enter  Up/Down/Left/Right=Arrow keys
+    private void OnKeyDown(object? sender, KeyEventArgs e) => SetKey(e.KeyCode, true);
+    private void OnKeyUp  (object? sender, KeyEventArgs e) => SetKey(e.KeyCode, false);
+
+    private void SetKey(Keys key, bool pressed)
+    {
+        var c = _bus.Controller1;
+        switch (key)
+        {
+            case Keys.Z:          c.SetButton(Core.Input.Controller.Button.A,      pressed); break;
+            case Keys.X:          c.SetButton(Core.Input.Controller.Button.B,      pressed); break;
+            case Keys.RShiftKey:
+            case Keys.ShiftKey:   c.SetButton(Core.Input.Controller.Button.Select, pressed); break;
+            case Keys.Enter:      c.SetButton(Core.Input.Controller.Button.Start,  pressed); break;
+            case Keys.Up:         c.SetButton(Core.Input.Controller.Button.Up,     pressed); break;
+            case Keys.Down:       c.SetButton(Core.Input.Controller.Button.Down,   pressed); break;
+            case Keys.Left:       c.SetButton(Core.Input.Controller.Button.Left,   pressed); break;
+            case Keys.Right:      c.SetButton(Core.Input.Controller.Button.Right,  pressed); break;
+        }
     }
 
     // ── Menu ──────────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 using NesEmulator.Core.Cpu;
+using NesEmulator.Core.Input;
 using NesEmulator.Core.Ppu;
 using Cart = NesEmulator.Core.Cartridge.Cartridge;
 
@@ -7,9 +8,11 @@ namespace NesEmulator.Core.Memory;
 public sealed class Bus
 {
     private readonly byte[] _ram = new byte[2048];
-    public Cpu6502 Cpu { get; }
-    public Ppu2C02 Ppu { get; }
-    public Cart?   Cartridge { get; private set; }
+    public Cpu6502    Cpu        { get; }
+    public Ppu2C02    Ppu        { get; }
+    public Controller Controller1 { get; } = new();
+    public Controller Controller2 { get; } = new();
+    public Cart?      Cartridge   { get; private set; }
 
     public ulong SystemClock { get; private set; }
 
@@ -28,22 +31,12 @@ public sealed class Bus
 
     public void Clock()
     {
-        // PPU runs at 3× CPU speed
         Ppu.Clock();
-
-        if (SystemClock % 3 == 0)
-            Cpu.Clock();
-
-        if (Ppu.NmiRequested)
-        {
-            Ppu.ClearNmi();
-            Cpu.NMI();
-        }
-
+        if (SystemClock % 3 == 0) Cpu.Clock();
+        if (Ppu.NmiRequested) { Ppu.ClearNmi(); Cpu.NMI(); }
         SystemClock++;
     }
 
-    /// <summary>Run until the PPU signals a complete frame.</summary>
     public void RunFrame()
     {
         Ppu.ClearFrameComplete();
@@ -53,15 +46,15 @@ public sealed class Bus
     // ── CPU bus read ──────────────────────────────────────────────────────────
     public byte Read(ushort address)
     {
-        // CPU RAM  $0000–$1FFF (2 KB mirrored)
         if (address <= 0x1FFF)
             return _ram[address & 0x07FF];
 
-        // PPU registers  $2000–$3FFF (8 bytes mirrored)
         if (address >= 0x2000 && address <= 0x3FFF)
             return Ppu.CpuRead(address);
 
-        // Cartridge  $4020–$FFFF
+        if (address == 0x4016) return Controller1.Read();
+        if (address == 0x4017) return Controller2.Read();
+
         if (address >= 0x8000 && Cartridge is not null && Cartridge.CpuRead(address, out byte data))
             return data;
 
@@ -71,24 +64,21 @@ public sealed class Bus
     // ── CPU bus write ─────────────────────────────────────────────────────────
     public void Write(ushort address, byte data)
     {
-        if (address <= 0x1FFF)
-        {
-            _ram[address & 0x07FF] = data;
-            return;
-        }
+        if (address <= 0x1FFF) { _ram[address & 0x07FF] = data; return; }
 
-        if (address >= 0x2000 && address <= 0x3FFF)
-        {
-            Ppu.CpuWrite(address, data);
-            return;
-        }
+        if (address >= 0x2000 && address <= 0x3FFF) { Ppu.CpuWrite(address, data); return; }
 
-        // OAM DMA  $4014
         if (address == 0x4014)
         {
             ushort page = (ushort)(data << 8);
-            for (int i = 0; i < 256; i++)
-                Ppu.Oam[i] = Read((ushort)(page + i));
+            for (int i = 0; i < 256; i++) Ppu.Oam[i] = Read((ushort)(page + i));
+            return;
+        }
+
+        if (address == 0x4016)
+        {
+            Controller1.Write(data);
+            Controller2.Write(data);
         }
     }
 }
