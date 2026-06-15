@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="NesEmulator.Core/NesEmulator.Core.csproj" />
+  <Project Path="NesEmulator.Desktop/NesEmulator.Desktop.csproj" />
+</Solution>
