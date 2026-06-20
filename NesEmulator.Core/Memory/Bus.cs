@@ -2,6 +2,7 @@ using NesEmulator.Core.Apu;
 using NesEmulator.Core.Cpu;
 using NesEmulator.Core.Input;
 using NesEmulator.Core.Ppu;
+using NesEmulator.Core;
 using Cart = NesEmulator.Core.Cartridge.Cartridge;
 
 namespace NesEmulator.Core.Memory;
@@ -18,6 +19,13 @@ public sealed class Bus
 
     public ulong SystemClock { get; private set; }
 
+    private TvSystem _tvSystem = TvSystem.Ntsc;
+    public TvSystem TvSystem
+    {
+        get => _tvSystem;
+        set { _tvSystem = value; Ppu.TvSystem = value; Apu.TvSystem = value; }
+    }
+
     public Bus()
     {
         Ppu = new Ppu2C02();
@@ -25,10 +33,12 @@ public sealed class Bus
         Apu = new Apu2A03(Read);  // DMC reads samples via CPU bus
     }
 
+    // Auto-detects TV system from the ROM header; caller can override afterward via TvSystem.
     public void InsertCartridge(Cart cart)
     {
         Cartridge = cart;
         Ppu.InsertCartridge(cart);
+        TvSystem = cart.DetectedTvSystem;
         Cpu.Reset();
     }
 
@@ -60,6 +70,7 @@ public sealed class Bus
         using var fs = File.Create(path);
         using var bw = new BinaryWriter(fs);
         bw.Write(StateMagic);
+        bw.Write((int)_tvSystem);
         bw.Write(_ram);
         bw.Write(SystemClock);
         Cpu.SaveState(bw);
@@ -77,6 +88,7 @@ public sealed class Bus
         var magic = br.ReadBytes(4);
         if (!magic.SequenceEqual(StateMagic))
             throw new InvalidDataException("Not a valid NES save-state file.");
+        TvSystem = (TvSystem)br.ReadInt32();
         br.Read(_ram);
         SystemClock = br.ReadUInt64();
         Cpu.LoadState(br);

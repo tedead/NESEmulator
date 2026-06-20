@@ -1,5 +1,6 @@
 using Cart = NesEmulator.Core.Cartridge.Cartridge;
 using NesEmulator.Core.Cartridge;
+using NesEmulator.Core;
 
 namespace NesEmulator.Core.Ppu;
 
@@ -59,6 +60,8 @@ public sealed partial class Ppu2C02
     private readonly byte[,] _nameTable = new byte[2, 1024]; // 2 nametables × 1K
     private readonly byte[]  _palette   = new byte[32];
     public  readonly byte[]  Oam        = new byte[256];     // primary OAM
+
+    public TvSystem TvSystem { get; set; } = TvSystem.Ntsc;
 
     // ── Cartridge ─────────────────────────────────────────────────────────────
     private Cart? _cartridge;

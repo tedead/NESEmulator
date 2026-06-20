@@ -1,3 +1,5 @@
+using NesEmulator.Core;
+
 namespace NesEmulator.Core.Ppu;
 
 public sealed partial class Ppu2C02
@@ -89,14 +91,17 @@ public sealed partial class Ppu2C02
 
         // ── Advance counters ──────────────────────────────────────────────────
         _cycle++;
-        if (RenderingEnabled && _oddFrame && _scanline == -1 && _cycle == 340)
-            _cycle++; // skip one cycle on odd frames
+        // Odd-frame dot skip keeps NTSC's 3:1 PPU:CPU ratio in sync over 2 frames;
+        // PAL does not perform this skip.
+        if (TvSystem == TvSystem.Ntsc && RenderingEnabled && _oddFrame && _scanline == -1 && _cycle == 340)
+            _cycle++;
 
         if (_cycle > 340)
         {
             _cycle = 0;
             _scanline++;
-            if (_scanline > 260)
+            int lastScanline = TvSystem == TvSystem.Pal ? 310 : 260; // 312 vs 262 total scanlines
+            if (_scanline > lastScanline)
             {
                 _scanline   = -1;
                 FrameComplete = true;

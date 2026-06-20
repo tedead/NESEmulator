@@ -1,10 +1,17 @@
+using NesEmulator.Core;
+
 namespace NesEmulator.Core.Apu;
 
 internal sealed class DmcChannel
 {
-    // NTSC CPU-cycle periods between output level changes
-    private static readonly ushort[] RateTable =
+    // CPU-cycle periods between output level changes
+    private static readonly ushort[] RateTableNtsc =
         [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54];
+    private static readonly ushort[] RateTablePal =
+        [398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50];
+
+    public TvSystem TvSystem { get; set; } = TvSystem.Ntsc;
+    private ushort[] RateTable => TvSystem == TvSystem.Pal ? RateTablePal : RateTableNtsc;
 
     private readonly Func<ushort, byte> _cpuRead;
 

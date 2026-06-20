@@ -1,15 +1,32 @@
+using NesEmulator.Core;
+
 namespace NesEmulator.Core.Apu;
 
 public sealed class Apu2A03
 {
     public const int SampleRate = 44100;
-    private const double CpuFrequency = 1_789_773.0;
+    private const double CpuFrequencyNtsc = 1_789_773.0;
+    private const double CpuFrequencyPal  = 1_662_607.0;
+
+    // Frame-counter step cycle counts: NTSC vs PAL differ because the CPU runs slower on PAL.
+    private static readonly int[] StepsNtsc = [3729, 7457, 11186, 14915, 18641];
+    private static readonly int[] StepsPal  = [4156, 8313, 12469, 16626, 20782];
 
     private readonly PulseChannel    _pulse1;
     private readonly PulseChannel    _pulse2;
     private readonly TriangleChannel _triangle = new();
     private readonly NoiseChannel    _noise    = new();
     private readonly DmcChannel      _dmc;
+
+    private TvSystem _tvSystem = TvSystem.Ntsc;
+    public TvSystem TvSystem
+    {
+        get => _tvSystem;
+        set { _tvSystem = value; _noise.TvSystem = value; _dmc.TvSystem = value; }
+    }
+
+    private double CpuFrequency => _tvSystem == TvSystem.Pal ? CpuFrequencyPal : CpuFrequencyNtsc;
+    private int[]  Steps        => _tvSystem == TvSystem.Pal ? StepsPal        : StepsNtsc;
 
     private int  _cycle;
     private bool _oddCycle;
@@ -48,20 +65,21 @@ public sealed class Apu2A03
         }
 
         // Frame counter (4-step mode)
+        var steps = Steps;
         if (!_frameMode)
         {
-            if      (_cycle == 3729)  QuarterFrame();
-            else if (_cycle == 7457)  { QuarterFrame(); HalfFrame(); }
-            else if (_cycle == 11186) QuarterFrame();
-            else if (_cycle == 14915) { QuarterFrame(); HalfFrame(); if (!_frameIrqInhibit) _frameIrqPending = true; }
-            else if (_cycle == 14916) { if (!_frameIrqInhibit) _frameIrqPending = true; _cycle = 0; }
+            if      (_cycle == steps[0]) QuarterFrame();
+            else if (_cycle == steps[1]) { QuarterFrame(); HalfFrame(); }
+            else if (_cycle == steps[2]) QuarterFrame();
+            else if (_cycle == steps[3]) { QuarterFrame(); HalfFrame(); if (!_frameIrqInhibit) _frameIrqPending = true; }
+            else if (_cycle == steps[3] + 1) { if (!_frameIrqInhibit) _frameIrqPending = true; _cycle = 0; }
         }
         else // 5-step mode
         {
-            if      (_cycle == 3729)  QuarterFrame();
-            else if (_cycle == 7457)  { QuarterFrame(); HalfFrame(); }
-            else if (_cycle == 11186) QuarterFrame();
-            else if (_cycle == 18641) { QuarterFrame(); HalfFrame(); _cycle = 0; }
+            if      (_cycle == steps[0]) QuarterFrame();
+            else if (_cycle == steps[1]) { QuarterFrame(); HalfFrame(); }
+            else if (_cycle == steps[2]) QuarterFrame();
+            else if (_cycle == steps[4]) { QuarterFrame(); HalfFrame(); _cycle = 0; }
         }
 
         // Downsample to target rate
@@ -161,6 +179,7 @@ public sealed class Apu2A03
 
     public void SaveState(BinaryWriter bw)
     {
+        bw.Write((int)_tvSystem);
         bw.Write(_cycle); bw.Write(_oddCycle);
         bw.Write(_frameMode); bw.Write(_frameIrqInhibit); bw.Write(_frameIrqPending);
         bw.Write(_sampleAccum);
@@ -170,6 +189,7 @@ public sealed class Apu2A03
 
     public void LoadState(BinaryReader br)
     {
+        TvSystem  = (TvSystem)br.ReadInt32();
         _cycle    = br.ReadInt32(); _oddCycle = br.ReadBoolean();
         _frameMode = br.ReadBoolean(); _frameIrqInhibit = br.ReadBoolean();
         _frameIrqPending = br.ReadBoolean();

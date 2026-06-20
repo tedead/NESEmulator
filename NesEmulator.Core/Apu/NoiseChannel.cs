@@ -1,10 +1,16 @@
+using NesEmulator.Core;
+
 namespace NesEmulator.Core.Apu;
 
 internal sealed class NoiseChannel
 {
-    // NTSC timer periods
-    private static readonly ushort[] PeriodTable =
+    private static readonly ushort[] PeriodTableNtsc =
         [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068];
+    private static readonly ushort[] PeriodTablePal =
+        [4, 7, 14, 30, 60, 88, 118, 148, 188, 236, 354, 472, 708, 944, 1890, 3778];
+
+    public TvSystem TvSystem { get; set; } = TvSystem.Ntsc;
+    private ushort[] PeriodTable => TvSystem == TvSystem.Pal ? PeriodTablePal : PeriodTableNtsc;
 
     public bool Enabled;
     public int  LengthCounter;

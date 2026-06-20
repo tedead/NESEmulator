@@ -1,3 +1,4 @@
+using NesEmulator.Core;
 using NesEmulator.Core.Cpu;
 using NesEmulator.Core.Memory;
 using NesEmulator.Desktop.Audio;
@@ -34,6 +35,7 @@ public sealed class MainForm : Form
     private readonly Button      _btnReset     = new();
     private readonly Label       _lblCycles    = new();
     private readonly Label       _lblStatus    = new();
+    private ToolStripMenuItem?   _palMenuItem;
 
     public MainForm()
     {
@@ -99,6 +101,9 @@ public sealed class MainForm : Form
         emuMenu.DropDownItems.Add(new ToolStripMenuItem("Load State",       null, (_, _) => LoadState())       { ShortcutKeys = Keys.F10 });
         emuMenu.DropDownItems.Add(new ToolStripSeparator());
         emuMenu.DropDownItems.Add(new ToolStripMenuItem("Reset",            null, (_, _) => ResetSystem())     { ShortcutKeys = Keys.F2 });
+        emuMenu.DropDownItems.Add(new ToolStripSeparator());
+        _palMenuItem = new ToolStripMenuItem("PAL Mode", null, (_, _) => TogglePalMode()) { CheckOnClick = true };
+        emuMenu.DropDownItems.Add(_palMenuItem);
 
         menu.Items.AddRange([fileMenu, emuMenu]);
         Controls.Add(menu);
@@ -303,6 +308,8 @@ public sealed class MainForm : Form
             try
             {
                 _bus.LoadState(dlg.FileName);
+                _palMenuItem!.Checked = _bus.TvSystem == TvSystem.Pal;
+                ApplyTvSystemTiming();
                 BlitFrame();
                 UpdateUi();
                 _lblStatus.Text = "State loaded.";
@@ -322,8 +329,11 @@ public sealed class MainForm : Form
             var cart = Core.Cartridge.Cartridge.Load(dlg.FileName);
             _bus.InsertCartridge(cart);
             RefreshDisasm();
+            // Reflect the auto-detected TV system in the checkbox without re-toggling timing.
+            _palMenuItem!.Checked = _bus.TvSystem == TvSystem.Pal;
+            ApplyTvSystemTiming();
             UpdateUi();
-            _lblStatus.Text = $"Loaded: {cart.FileName}  |  Mapper {cart.MapperId}  |  Mirror: {cart.Mirror}";
+            _lblStatus.Text = $"Loaded: {cart.FileName}  |  Mapper {cart.MapperId}  |  Mirror: {cart.Mirror}  |  {_bus.TvSystem}";
             Text = $"NES Emulator — {cart.FileName}";
         }
         catch (Exception ex)
@@ -331,6 +341,17 @@ public sealed class MainForm : Form
             MessageBox.Show(ex.Message, "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
+
+    private void TogglePalMode()
+    {
+        _bus.TvSystem = _palMenuItem!.Checked ? TvSystem.Pal : TvSystem.Ntsc;
+        ApplyTvSystemTiming();
+        _lblStatus.Text = $"Switched to {_bus.TvSystem}.";
+    }
+
+    // NTSC ~60.098 fps (16.6 ms/frame); PAL ~50.007 fps (20.0 ms/frame).
+    private void ApplyTvSystemTiming() =>
+        _runTimer.Interval = _bus.TvSystem == TvSystem.Pal ? 20 : 16;
 
     private void RefreshDisasm() =>
         _disasm = _bus.Cpu.Disassemble(0x8000, 0xFFFF);
