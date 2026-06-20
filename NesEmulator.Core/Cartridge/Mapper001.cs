@@ -14,6 +14,9 @@ public sealed class Mapper001(int prgBanks, int chrBanks) : IMapper
     // CHR RAM for games that have no CHR ROM (e.g. Zelda)
     private readonly byte[] _chrRam = chrBanks == 0 ? new byte[8192] : [];
 
+    public bool IrqPending => false;
+    public void OnScanline() { }
+
     public MirrorMode Mirror => (_control & 0x03) switch
     {
         0 => MirrorMode.SingleLow,
@@ -24,46 +27,65 @@ public sealed class Mapper001(int prgBanks, int chrBanks) : IMapper
 
     public bool CpuRead(ushort address, byte[] prgRom, out byte data)
     {
-        data = 0;
-        if (address < 0x8000) return false;
 
         int prgMode = (_control >> 2) & 0x03;
-        int bank    = _prgBank & 0x0F;
 
-        if (prgMode <= 1) // 32KB switching: treat bank as 32KB index (ignore low bit)
+        int bank = _prgBank & 0x0F;
+
+        data = 0;
+
+        if (address < 0x8000)
+        {
+            return false;
+        }
+
+        if (prgMode <= 1) //32KB switching: treat bank as 32KB index (ignore low bit)
         {
             int bank32 = bank >> 1;
+
             data = prgRom[(bank32 * 0x8000 + (address - 0x8000)) % prgRom.Length];
         }
-        else if (prgMode == 2) // fix first 16KB at $8000, switch 16KB at $C000
+        else if (prgMode == 2) //Fix first 16KB at $8000, switch 16KB at $C000
         {
             if (address < 0xC000)
+            {
                 data = prgRom[address - 0x8000];
+            }
             else
+            {
                 data = prgRom[(bank * 0x4000 + (address - 0xC000)) % prgRom.Length];
+            }
         }
-        else // fix last 16KB at $C000, switch 16KB at $8000
+        else //Fix last 16KB at $C000, switch 16KB at $8000
         {
             if (address >= 0xC000)
+            {
                 data = prgRom[((prgBanks - 1) * 0x4000 + (address - 0xC000)) % prgRom.Length];
+            }
             else
+            {
                 data = prgRom[(bank * 0x4000 + (address - 0x8000)) % prgRom.Length];
+            }
         }
+
         return true;
     }
 
     public bool CpuWrite(ushort address, byte data)
     {
-        if (address < 0x8000) return false;
+        if (address < 0x8000)
+        { 
+            return false;
+        }
 
-        if ((data & 0x80) != 0) // reset bit
+        if ((data & 0x80) != 0) //Reset bit
         {
             _shiftReg  = 0x10;
             _control  |= 0x0C;
             return true;
         }
 
-        bool complete = (_shiftReg & 1) != 0; // low bit of shift = "this is the 5th write"
+        bool complete = (_shiftReg & 1) != 0; //Low bit of shift = "this is the 5th write"}
         _shiftReg = (byte)((_shiftReg >> 1) | ((data & 1) << 4));
 
         if (complete)
@@ -82,13 +104,18 @@ public sealed class Mapper001(int prgBanks, int chrBanks) : IMapper
     public bool PpuRead(ushort address, byte[] chrRom, out byte data)
     {
         data = 0;
-        if (address > 0x1FFF) return false;
+
+        if (address > 0x1FFF)
+        {
+            return false;
+        }
 
         byte[] src = chrRom.Length > 0 ? chrRom : _chrRam;
 
-        if ((_control & 0x10) == 0) // 8KB CHR mode
+        if ((_control & 0x10) == 0) //8KB CHR mode
         {
-            int bank = _chrBank0 & ~1; // ignore low bit
+            int bank = _chrBank0 & ~1; //Ignore low bit
+
             data = src[(bank * 0x1000 + address) % src.Length];
         }
         else // 4KB CHR mode

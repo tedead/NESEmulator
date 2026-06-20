@@ -8,9 +8,10 @@ public sealed class Cartridge
     private readonly byte[]  _chrRom;
     private readonly IMapper _mapper;
 
-    public string     FileName  { get; }
-    public int        MapperId  { get; }
-    public MirrorMode Mirror    => _mapper.Mirror;
+    public string     FileName   { get; }
+    public int        MapperId   { get; }
+    public MirrorMode Mirror     => _mapper.Mirror;
+    public bool        IrqPending => _mapper.IrqPending;
 
     private Cartridge(string fileName, byte[] prgRom, byte[] chrRom, int mapperId, IMapper mapper)
     {
@@ -47,6 +48,8 @@ public sealed class Cartridge
         {
             0 => new Mapper000(prgBanks, mirror),
             1 => new Mapper001(prgBanks, chrBanks),
+            2 => new Mapper002(prgBanks, mirror),
+            4 => new Mapper004(prgBanks, chrBanks),
             _ => throw new NotSupportedException($"Mapper {mapperId} is not yet supported.")
         };
 
@@ -57,6 +60,8 @@ public sealed class Cartridge
     public bool CpuWrite(ushort address, byte data)     => _mapper.CpuWrite(address, data);
     public bool PpuRead (ushort address, out byte data) => _mapper.PpuRead (address, _chrRom, out data);
     public bool PpuWrite(ushort address, byte data)     => _mapper.PpuWrite(address, _chrRom, data);
+
+    public void OnScanline() => _mapper.OnScanline();
 
     public void SaveState(BinaryWriter bw) => _mapper.SaveState(bw);
     public void LoadState(BinaryReader br) => _mapper.LoadState(br);

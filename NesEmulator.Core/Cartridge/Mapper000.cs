@@ -6,6 +6,8 @@ public sealed class Mapper000(int prgBanks, MirrorMode mirror) : IMapper
     private readonly ushort _prgMask = prgBanks > 1 ? (ushort)0x7FFF : (ushort)0x3FFF;
 
     public MirrorMode Mirror => mirror;
+    public bool        IrqPending => false;
+    public void OnScanline() { }
 
     public bool CpuRead(ushort address, byte[] prgRom, out byte data)
     {

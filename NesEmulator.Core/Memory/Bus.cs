@@ -42,6 +42,7 @@ public sealed class Bus
         }
         if (Ppu.NmiRequested) { Ppu.ClearNmi(); Cpu.NMI(); }
         if (Apu.IrqPending)   Cpu.IRQ();
+        if (Cartridge?.IrqPending == true) Cpu.IRQ();
         SystemClock++;
     }
 

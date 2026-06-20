@@ -70,6 +70,10 @@ public sealed partial class Ppu2C02
             // ── Sprite tile fetch (simplified: done all at cycle 340) ─────────
             if (_cycle == 340 && _scanline >= 0)
                 FetchSpriteTiles();
+
+            // ── Mapper scanline IRQ (e.g. MMC3) — simplified PPU-A12-edge proxy ─
+            if (_cycle == 260 && RenderingEnabled)
+                _cartridge?.OnScanline();
         }
 
         // ── VBlank ────────────────────────────────────────────────────────────
