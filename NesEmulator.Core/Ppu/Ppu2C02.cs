@@ -216,4 +216,36 @@ public sealed partial class Ppu2C02
     }
 
     private byte _dataBuffer;
+
+    // ── Save / Load state ─────────────────────────────────────────────────────
+    public void SaveState(BinaryWriter bw)
+    {
+        bw.Write(_ctrl); bw.Write(_mask); bw.Write(_status); bw.Write(_oamAddr);
+        bw.Write(_v); bw.Write(_t); bw.Write(_x); bw.Write(_w);
+        for (int i = 0; i < 2; i++)
+            for (int j = 0; j < 1024; j++)
+                bw.Write(_nameTable[i, j]);
+        bw.Write(_palette);
+        bw.Write(Oam);
+        bw.Write(_dataBuffer);
+        bw.Write(NmiRequested);
+        SaveClockState(bw);
+    }
+
+    public void LoadState(BinaryReader br)
+    {
+        _ctrl    = br.ReadByte(); _mask    = br.ReadByte();
+        _status  = br.ReadByte(); _oamAddr = br.ReadByte();
+        _v = br.ReadUInt16(); _t = br.ReadUInt16();
+        _x = br.ReadByte();   _w = br.ReadBoolean();
+        for (int i = 0; i < 2; i++)
+            for (int j = 0; j < 1024; j++)
+                _nameTable[i, j] = br.ReadByte();
+        br.Read(_palette);
+        br.Read(Oam);
+        _dataBuffer   = br.ReadByte();
+        NmiRequested  = br.ReadBoolean();
+        FrameComplete = false;
+        LoadClockState(br);
+    }
 }

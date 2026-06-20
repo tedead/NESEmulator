@@ -1,5 +1,6 @@
 using NesEmulator.Core.Cpu;
 using NesEmulator.Core.Memory;
+using NesEmulator.Desktop.Audio;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -12,6 +13,7 @@ public sealed class MainForm : Form
 {
     // ── Emulator ──────────────────────────────────────────────────────────────
     private readonly Bus  _bus     = new();
+    private NesAudioProvider? _audio;
     private Dictionary<ushort, string> _disasm = [];
     private bool _running;
     private readonly Timer _runTimer = new() { Interval = 16 }; // ~60 fps
@@ -46,6 +48,7 @@ public sealed class MainForm : Form
         BuildLayout();
 
         _runTimer.Tick += RunTimer_Tick;
+        Load += (_, _) => _audio = new NesAudioProvider();
 
         KeyPreview = true;
         KeyDown += OnKeyDown;
@@ -91,6 +94,9 @@ public sealed class MainForm : Form
         emuMenu.DropDownItems.Add(new ToolStripMenuItem("Step Frame",       null, (_, _) => StepFrame())       { ShortcutKeys = Keys.F8 });
         emuMenu.DropDownItems.Add(new ToolStripMenuItem("Run",              null, (_, _) => Run())             { ShortcutKeys = Keys.F5 });
         emuMenu.DropDownItems.Add(new ToolStripMenuItem("Stop",             null, (_, _) => Stop())            { ShortcutKeys = Keys.F6 });
+        emuMenu.DropDownItems.Add(new ToolStripSeparator());
+        emuMenu.DropDownItems.Add(new ToolStripMenuItem("Save State",       null, (_, _) => SaveState())       { ShortcutKeys = Keys.F9 });
+        emuMenu.DropDownItems.Add(new ToolStripMenuItem("Load State",       null, (_, _) => LoadState())       { ShortcutKeys = Keys.F10 });
         emuMenu.DropDownItems.Add(new ToolStripSeparator());
         emuMenu.DropDownItems.Add(new ToolStripMenuItem("Reset",            null, (_, _) => ResetSystem())     { ShortcutKeys = Keys.F2 });
 
@@ -224,6 +230,7 @@ public sealed class MainForm : Form
     {
         if (_bus.Cartridge is null) return;
         _bus.RunFrame();
+        _audio?.Submit(_bus.Apu.Samples);
         BlitFrame();
         UpdateUi();
     }
@@ -257,8 +264,52 @@ public sealed class MainForm : Form
     {
         if (_bus.Cartridge is null) return;
         _bus.RunFrame();
+        _audio?.Submit(_bus.Apu.Samples);
         BlitFrame();
         UpdateUi();
+    }
+
+    private void SaveState()
+    {
+        if (_bus.Cartridge is null) return;
+        bool wasRunning = _running;
+        Stop();
+        using var dlg = new SaveFileDialog
+        {
+            Title  = "Save State",
+            Filter = "NES Save State (*.nst)|*.nst",
+            FileName = Path.GetFileNameWithoutExtension(_bus.Cartridge.FileName) + ".nst",
+        };
+        if (dlg.ShowDialog() == DialogResult.OK)
+        {
+            try   { _bus.SaveState(dlg.FileName); _lblStatus.Text = "State saved."; }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Save State Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+        if (wasRunning) Run();
+    }
+
+    private void LoadState()
+    {
+        if (_bus.Cartridge is null) return;
+        bool wasRunning = _running;
+        Stop();
+        using var dlg = new OpenFileDialog
+        {
+            Title  = "Load State",
+            Filter = "NES Save State (*.nst)|*.nst",
+        };
+        if (dlg.ShowDialog() == DialogResult.OK)
+        {
+            try
+            {
+                _bus.LoadState(dlg.FileName);
+                BlitFrame();
+                UpdateUi();
+                _lblStatus.Text = "State loaded.";
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Load State Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+        if (wasRunning) Run();
     }
 
     private void OnLoadRom(object? sender, EventArgs e)
@@ -384,7 +435,7 @@ public sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _runTimer.Dispose(); _frameBitmap.Dispose(); }
+        if (disposing) { _runTimer.Dispose(); _frameBitmap.Dispose(); _audio?.Dispose(); }
         base.Dispose(disposing);
     }
 }

@@ -240,6 +240,31 @@ public sealed partial class Ppu2C02
         }
     }
 
+    public void SaveClockState(BinaryWriter bw)
+    {
+        bw.Write(_cycle); bw.Write(_scanline); bw.Write(_oddFrame);
+        bw.Write(_bgNextId); bw.Write(_bgNextAttrib);
+        bw.Write(_bgNextLo); bw.Write(_bgNextHi);
+        bw.Write(_bgShiftPatLo);  bw.Write(_bgShiftPatHi);
+        bw.Write(_bgShiftAttrLo); bw.Write(_bgShiftAttrHi);
+        bw.Write(_secOam); bw.Write(_sprCount);
+        bw.Write(_sprShiftLo); bw.Write(_sprShiftHi);
+        bw.Write(_spr0InRange); bw.Write(_spr0Rendered);
+    }
+
+    public void LoadClockState(BinaryReader br)
+    {
+        _cycle    = br.ReadInt32(); _scanline = br.ReadInt32(); _oddFrame = br.ReadBoolean();
+        _bgNextId     = br.ReadByte(); _bgNextAttrib = br.ReadByte();
+        _bgNextLo     = br.ReadByte(); _bgNextHi     = br.ReadByte();
+        _bgShiftPatLo  = br.ReadUInt16(); _bgShiftPatHi  = br.ReadUInt16();
+        _bgShiftAttrLo = br.ReadUInt16(); _bgShiftAttrHi = br.ReadUInt16();
+        br.Read(_secOam); _sprCount = br.ReadInt32();
+        br.Read(_sprShiftLo); br.Read(_sprShiftHi);
+        _spr0InRange  = br.ReadBoolean();
+        _spr0Rendered = br.ReadBoolean();
+    }
+
     private static byte FlipByte(byte b)
     {
         b = (byte)((b & 0xF0) >> 4 | (b & 0x0F) << 4);

@@ -1,3 +1,4 @@
+using NesEmulator.Core.Apu;
 using NesEmulator.Core.Cpu;
 using NesEmulator.Core.Input;
 using NesEmulator.Core.Ppu;
@@ -8,11 +9,12 @@ namespace NesEmulator.Core.Memory;
 public sealed class Bus
 {
     private readonly byte[] _ram = new byte[2048];
-    public Cpu6502    Cpu        { get; }
-    public Ppu2C02    Ppu        { get; }
-    public Controller Controller1 { get; } = new();
-    public Controller Controller2 { get; } = new();
-    public Cart?      Cartridge   { get; private set; }
+    public Cpu6502     Cpu         { get; }
+    public Ppu2C02     Ppu         { get; }
+    public Apu2A03     Apu         { get; }
+    public Controller  Controller1 { get; } = new();
+    public Controller  Controller2 { get; } = new();
+    public Cart?       Cartridge   { get; private set; }
 
     public ulong SystemClock { get; private set; }
 
@@ -20,6 +22,7 @@ public sealed class Bus
     {
         Ppu = new Ppu2C02();
         Cpu = new Cpu6502(this);
+        Apu = new Apu2A03(Read);  // DMC reads samples via CPU bus
     }
 
     public void InsertCartridge(Cart cart)
@@ -32,8 +35,13 @@ public sealed class Bus
     public void Clock()
     {
         Ppu.Clock();
-        if (SystemClock % 3 == 0) Cpu.Clock();
+        if (SystemClock % 3 == 0)
+        {
+            Cpu.Clock();
+            Apu.Clock();
+        }
         if (Ppu.NmiRequested) { Ppu.ClearNmi(); Cpu.NMI(); }
+        if (Apu.IrqPending)   Cpu.IRQ();
         SystemClock++;
     }
 
@@ -41,6 +49,41 @@ public sealed class Bus
     {
         Ppu.ClearFrameComplete();
         do { Clock(); } while (!Ppu.FrameComplete);
+    }
+
+    // ── Save / Load state ─────────────────────────────────────────────────────
+    private static readonly byte[] StateMagic = "NST1"u8.ToArray();
+
+    public void SaveState(string path)
+    {
+        using var fs = File.Create(path);
+        using var bw = new BinaryWriter(fs);
+        bw.Write(StateMagic);
+        bw.Write(_ram);
+        bw.Write(SystemClock);
+        Cpu.SaveState(bw);
+        Ppu.SaveState(bw);
+        Apu.SaveState(bw);
+        Controller1.SaveState(bw);
+        Controller2.SaveState(bw);
+        Cartridge!.SaveState(bw);
+    }
+
+    public void LoadState(string path)
+    {
+        using var fs = File.OpenRead(path);
+        using var br = new BinaryReader(fs);
+        var magic = br.ReadBytes(4);
+        if (!magic.SequenceEqual(StateMagic))
+            throw new InvalidDataException("Not a valid NES save-state file.");
+        br.Read(_ram);
+        SystemClock = br.ReadUInt64();
+        Cpu.LoadState(br);
+        Ppu.LoadState(br);
+        Apu.LoadState(br);
+        Controller1.LoadState(br);
+        Controller2.LoadState(br);
+        Cartridge!.LoadState(br);
     }
 
     // ── CPU bus read ──────────────────────────────────────────────────────────
@@ -52,6 +95,7 @@ public sealed class Bus
         if (address >= 0x2000 && address <= 0x3FFF)
             return Ppu.CpuRead(address);
 
+        if (address == 0x4015) return Apu.CpuRead(address);
         if (address == 0x4016) return Controller1.Read();
         if (address == 0x4017) return Controller2.Read();
 
@@ -79,6 +123,16 @@ public sealed class Bus
         {
             Controller1.Write(data);
             Controller2.Write(data);
+            return;
         }
+
+        // APU registers: $4000-$4013, $4015, $4017
+        if ((address >= 0x4000 && address <= 0x4013) || address == 0x4015 || address == 0x4017)
+        {
+            Apu.CpuWrite(address, data);
+            return;
+        }
+
+        if (address >= 0x8000) Cartridge?.CpuWrite(address, data);
     }
 }

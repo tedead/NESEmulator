@@ -146,6 +146,26 @@ public sealed partial class Cpu6502
         return _fetched;
     }
 
+    // ── Save / Load state ─────────────────────────────────────────────────────
+    public void SaveState(BinaryWriter bw)
+    {
+        bw.Write(A); bw.Write(X); bw.Write(Y); bw.Write(SP); bw.Write(P); bw.Write(PC);
+        bw.Write(_fetched); bw.Write(_addrAbs); bw.Write(_addrRel);
+        bw.Write(_opcode); bw.Write(_cycles); bw.Write(TotalCycles);
+    }
+
+    public void LoadState(BinaryReader br)
+    {
+        A  = br.ReadByte();  X  = br.ReadByte();  Y  = br.ReadByte();
+        SP = br.ReadByte();  P  = br.ReadByte();  PC = br.ReadUInt16();
+        _fetched  = br.ReadByte();
+        _addrAbs  = br.ReadUInt16();
+        _addrRel  = br.ReadUInt16();
+        _opcode   = br.ReadByte();
+        _cycles   = br.ReadInt32();
+        TotalCycles = br.ReadUInt64();
+    }
+
     // ── Disassembler ──────────────────────────────────────────────────────────
     public Dictionary<ushort, string> Disassemble(ushort start, ushort end)
     {

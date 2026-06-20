@@ -4,22 +4,21 @@ public enum MirrorMode { Horizontal, Vertical, SingleLow, SingleHigh }
 
 public sealed class Cartridge
 {
-    private readonly byte[] _prgRom;
-    private readonly byte[] _chrRom;
-    private readonly Mapper000 _mapper;
+    private readonly byte[]  _prgRom;
+    private readonly byte[]  _chrRom;
+    private readonly IMapper _mapper;
 
-    public string     FileName   { get; }
-    public int        MapperId   { get; }
-    public MirrorMode Mirror     { get; }
+    public string     FileName  { get; }
+    public int        MapperId  { get; }
+    public MirrorMode Mirror    => _mapper.Mirror;
 
-    private Cartridge(string fileName, byte[] prgRom, byte[] chrRom, int mapperId, int prgBanks, MirrorMode mirror)
+    private Cartridge(string fileName, byte[] prgRom, byte[] chrRom, int mapperId, IMapper mapper)
     {
         FileName = fileName;
         _prgRom  = prgRom;
         _chrRom  = chrRom;
         MapperId = mapperId;
-        Mirror   = mirror;
-        _mapper  = new Mapper000(prgBanks);
+        _mapper  = mapper;
     }
 
     public static Cartridge Load(string path)
@@ -42,31 +41,23 @@ public sealed class Cartridge
         if ((header[6] & 0x04) != 0) br.ReadBytes(512); // skip trainer
 
         byte[] prgRom = br.ReadBytes(prgBanks * 16384);
-        byte[] chrRom = chrBanks > 0 ? br.ReadBytes(chrBanks * 8192) : new byte[8192];
+        byte[] chrRom = chrBanks > 0 ? br.ReadBytes(chrBanks * 8192) : [];
 
-        if (mapperId != 0)
-            throw new NotSupportedException($"Mapper {mapperId} is not yet supported. Only Mapper 0 (NROM) is implemented.");
+        IMapper mapper = mapperId switch
+        {
+            0 => new Mapper000(prgBanks, mirror),
+            1 => new Mapper001(prgBanks, chrBanks),
+            _ => throw new NotSupportedException($"Mapper {mapperId} is not yet supported.")
+        };
 
-        return new Cartridge(Path.GetFileName(path), prgRom, chrRom, mapperId, prgBanks, mirror);
+        return new Cartridge(Path.GetFileName(path), prgRom, chrRom, mapperId, mapper);
     }
 
-    public bool CpuRead(ushort address, out byte data)
-    {
-        data = 0;
-        if (address < 0x8000) return false;
-        data = _prgRom[(address - 0x8000) & _mapper.PrgMask];
-        return true;
-    }
+    public bool CpuRead (ushort address, out byte data) => _mapper.CpuRead (address, _prgRom, out data);
+    public bool CpuWrite(ushort address, byte data)     => _mapper.CpuWrite(address, data);
+    public bool PpuRead (ushort address, out byte data) => _mapper.PpuRead (address, _chrRom, out data);
+    public bool PpuWrite(ushort address, byte data)     => _mapper.PpuWrite(address, _chrRom, data);
 
-    public bool CpuWrite(ushort address, byte data) => false;
-
-    public bool PpuRead(ushort address, out byte data)
-    {
-        data = 0;
-        if (address > 0x1FFF) return false;
-        data = _chrRom[address];
-        return true;
-    }
-
-    public bool PpuWrite(ushort address, byte data) => false; // CHR RAM not supported yet
+    public void SaveState(BinaryWriter bw) => _mapper.SaveState(bw);
+    public void LoadState(BinaryReader br) => _mapper.LoadState(br);
 }

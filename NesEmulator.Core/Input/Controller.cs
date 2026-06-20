@@ -26,6 +26,9 @@ public sealed class Controller
         if (_strobe) _shift = _liveState; // latch on high strobe
     }
 
+    public void SaveState(BinaryWriter bw) { bw.Write(_liveState); bw.Write(_shift); bw.Write(_strobe); }
+    public void LoadState(BinaryReader br) { _liveState = br.ReadByte(); _shift = br.ReadByte(); _strobe = br.ReadBoolean(); }
+
     // CPU reads $4016 / $4017
     public byte Read()
     {
