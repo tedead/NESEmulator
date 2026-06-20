@@ -5,8 +5,8 @@ using NesEmulator.Desktop.Audio;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
-using Timer = System.Windows.Forms.Timer;
 
 namespace NesEmulator.Desktop.Forms;
 
@@ -16,11 +16,24 @@ public sealed class MainForm : Form
     private readonly Bus  _bus     = new();
     private NesAudioProvider? _audio;
     private Dictionary<ushort, string> _disasm = [];
+    private List<ushort> _disasmKeys = [];
     private bool _running;
-    private readonly Timer _runTimer = new() { Interval = 16 }; // ~60 fps
+
+    // Dedicated emulation thread: System.Windows.Forms.Timer (WM_TIMER) was
+    // measured losing 20+ ms per frame to message-queue scheduling regardless
+    // of timer resolution — it's the lowest-priority message in the queue and
+    // Windows can coalesce/delay it well past the requested interval. A
+    // Stopwatch-paced background thread sidesteps the UI message pump entirely.
+    private Thread?           _emuThread;
+    private volatile bool     _emuThreadRunning;
+    private readonly object   _frameLock = new();
+    private int[]?            _pendingFrame;
+    private readonly int[][]  _framePool = [new int[256 * 240], new int[256 * 240], new int[256 * 240]];
+    private int               _framePoolIndex;
 
     // Video bitmap (256×240, reused every frame)
     private readonly Bitmap _frameBitmap = new(256, 240, PixelFormat.Format32bppArgb);
+    private readonly int[]  _blitBuffer  = new int[256 * 240]; // reused scratch buffer for single-step paths
 
     // ── UI controls ───────────────────────────────────────────────────────────
     private readonly PictureBox  _picVideo     = new();
@@ -35,7 +48,13 @@ public sealed class MainForm : Form
     private readonly Button      _btnReset     = new();
     private readonly Label       _lblCycles    = new();
     private readonly Label       _lblStatus    = new();
+    private readonly Label       _lblFps       = new();
     private ToolStripMenuItem?   _palMenuItem;
+    private ToolStripMenuItem?   _fpsMenuItem;
+
+    // ── FPS counter ───────────────────────────────────────────────────────────
+    private readonly System.Diagnostics.Stopwatch _fpsStopwatch = System.Diagnostics.Stopwatch.StartNew();
+    private int _fpsFrameCount;
 
     public MainForm()
     {
@@ -45,11 +64,11 @@ public sealed class MainForm : Form
         BackColor     = Color.FromArgb(28, 28, 28);
         ForeColor     = Color.FromArgb(220, 220, 220);
         Font          = new Font("Consolas", 10);
+        DoubleBuffered = true;
 
         BuildMenu();
         BuildLayout();
 
-        _runTimer.Tick += RunTimer_Tick;
         Load += (_, _) => _audio = new NesAudioProvider();
 
         KeyPreview = true;
@@ -61,10 +80,24 @@ public sealed class MainForm : Form
 
     // ── Controller key mapping ────────────────────────────────────────────────
     // A=Z  B=X  Select=RShift  Start=Enter  Up/Down/Left/Right=Arrow keys
-    private void OnKeyDown(object? sender, KeyEventArgs e) => SetKey(e.KeyCode, true);
-    private void OnKeyUp  (object? sender, KeyEventArgs e) => SetKey(e.KeyCode, false);
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!SetKey(e.KeyCode, true)) return;
+        // Without this, WinForms treats unhandled Enter/Arrow keys as dialog
+        // navigation: Enter clicks whichever Button has focus (Run/Stop/Step/
+        // Reset), and arrows move focus between controls — silently fighting
+        // with NES input instead of just setting the controller bit.
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
 
-    private void SetKey(Keys key, bool pressed)
+    private void OnKeyUp(object? sender, KeyEventArgs e)
+    {
+        if (!SetKey(e.KeyCode, false)) return;
+        e.Handled = true;
+    }
+
+    private bool SetKey(Keys key, bool pressed)
     {
         var c = _bus.Controller1;
         switch (key)
@@ -78,7 +111,9 @@ public sealed class MainForm : Form
             case Keys.Down:       c.SetButton(Core.Input.Controller.Button.Down,   pressed); break;
             case Keys.Left:       c.SetButton(Core.Input.Controller.Button.Left,   pressed); break;
             case Keys.Right:      c.SetButton(Core.Input.Controller.Button.Right,  pressed); break;
+            default:              return false;
         }
+        return true;
     }
 
     // ── Menu ──────────────────────────────────────────────────────────────────
@@ -105,7 +140,11 @@ public sealed class MainForm : Form
         _palMenuItem = new ToolStripMenuItem("PAL Mode", null, (_, _) => TogglePalMode()) { CheckOnClick = true };
         emuMenu.DropDownItems.Add(_palMenuItem);
 
-        menu.Items.AddRange([fileMenu, emuMenu]);
+        var viewMenu = new ToolStripMenuItem("View");
+        _fpsMenuItem = new ToolStripMenuItem("Show FPS", null, (_, _) => _lblFps.Visible = _fpsMenuItem!.Checked) { CheckOnClick = true };
+        viewMenu.DropDownItems.Add(_fpsMenuItem);
+
+        menu.Items.AddRange([fileMenu, emuMenu, viewMenu]);
         Controls.Add(menu);
         MainMenuStrip = menu;
     }
@@ -123,6 +162,18 @@ public sealed class MainForm : Form
         _picVideo.SizeMode      = PictureBoxSizeMode.Zoom;
         _picVideo.BackColor     = Color.Black;
         videoGroup.Controls.Add(_picVideo);
+
+        // FPS overlay, top-left corner of the video output
+        _lblFps.Text       = "FPS: --";
+        _lblFps.AutoSize   = true;
+        _lblFps.Font       = new Font("Consolas", 11, FontStyle.Bold);
+        _lblFps.ForeColor  = Color.FromArgb(80, 255, 80);
+        _lblFps.BackColor  = Color.FromArgb(160, 0, 0, 0);
+        _lblFps.Padding    = new Padding(4, 2, 4, 2);
+        _lblFps.Location   = new Point(6, 6);
+        _lblFps.Visible    = false;
+        _picVideo.Controls.Add(_lblFps);
+        _lblFps.BringToFront();
 
         // Right-top: registers
         var regGroup = MakeGroup("Registers", 540, 30, 200, 140);
@@ -246,13 +297,19 @@ public sealed class MainForm : Form
         _running = true;
         _btnRun.Enabled = _btnStep.Enabled = false;
         _lblStatus.Text = "Running";
-        _runTimer.Start();
+        _fpsFrameCount = 0;
+        _fpsStopwatch.Restart();
+        _emuThreadRunning = true;
+        _emuThread = new Thread(EmuThreadLoop) { IsBackground = true, Name = "EmuLoop" };
+        _emuThread.Start();
     }
 
     private void Stop()
     {
         _running = false;
-        _runTimer.Stop();
+        _emuThreadRunning = false;
+        _emuThread?.Join(250);
+        _emuThread = null;
         _btnRun.Enabled = _btnStep.Enabled = true;
         UpdateUi();
     }
@@ -265,13 +322,92 @@ public sealed class MainForm : Form
         UpdateUi();
     }
 
-    private void RunTimer_Tick(object? sender, EventArgs e)
+    private readonly System.Diagnostics.Stopwatch _profSw = new();
+    private double _profEmu, _profAudio, _profBlit, _profUi, _profGap;
+    private int _profSamples;
+
+    // Runs on a dedicated background thread, paced by a Stopwatch rather than
+    // WM_TIMER. Emulation + audio submission happen here directly; only the
+    // bitmap blit and label updates are marshaled to the UI thread.
+    private void EmuThreadLoop()
     {
-        if (_bus.Cartridge is null) return;
-        _bus.RunFrame();
-        _audio?.Submit(_bus.Apu.Samples);
-        BlitFrame();
-        UpdateUi();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        double nextFrameTime = 0;
+        double lastIterationEnd = 0;
+
+        while (_emuThreadRunning)
+        {
+            _profGap += sw.Elapsed.TotalMilliseconds - lastIterationEnd;
+
+            _profSw.Restart();
+            _bus.RunFrame();
+            _profEmu += _profSw.Elapsed.TotalMilliseconds; _profSw.Restart();
+
+            _audio?.Submit(_bus.Apu.Samples); // NAudio's BufferedWaveProvider is thread-safe
+            _profAudio += _profSw.Elapsed.TotalMilliseconds; _profSw.Restart();
+
+            var buf = _framePool[_framePoolIndex];
+            _framePoolIndex = (_framePoolIndex + 1) % _framePool.Length;
+            Buffer.BlockCopy(_bus.Ppu.FrameBuffer, 0, buf, 0, buf.Length * sizeof(int));
+            lock (_frameLock) { _pendingFrame = buf; }
+            _profBlit += _profSw.Elapsed.TotalMilliseconds; _profSw.Restart();
+
+            _profSamples++;
+            try { BeginInvoke(OnFrameReady); }
+            catch (ObjectDisposedException) { break; } // form closed mid-frame
+            catch (InvalidOperationException) { break; }
+
+            // Pace to the TV system's exact frame interval: sleep most of the
+            // remaining time, then spin the last ~1ms for precision.
+            double targetMs = _bus.TvSystem == TvSystem.Pal ? 19.9972 : 16.6394;
+            nextFrameTime += targetMs;
+            double remaining = nextFrameTime - sw.Elapsed.TotalMilliseconds;
+            if (remaining > 0)
+            {
+                if (remaining > 2) Thread.Sleep((int)(remaining - 1));
+                while (sw.Elapsed.TotalMilliseconds < nextFrameTime) { }
+            }
+            else
+            {
+                nextFrameTime = sw.Elapsed.TotalMilliseconds; // fell behind — resync, don't burst-catch-up
+            }
+
+            lastIterationEnd = sw.Elapsed.TotalMilliseconds;
+        }
+    }
+
+    // Marshaled onto the UI thread once per emulated frame.
+    private void OnFrameReady()
+    {
+        int[]? frame;
+        lock (_frameLock) { frame = _pendingFrame; _pendingFrame = null; }
+        if (frame is null) return; // a newer invoke already consumed it
+
+        var rect = new Rectangle(0, 0, 256, 240);
+        var bmpData = _frameBitmap.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        Marshal.Copy(frame, 0, bmpData.Scan0, frame.Length);
+        _frameBitmap.UnlockBits(bmpData);
+        _picVideo.Image = _frameBitmap;
+        _picVideo.Invalidate();
+
+        _profSw.Restart();
+        UpdateUi(fullDebugRefresh: false); // skip disasm/memory panels while running — pure UI cost, not needed during gameplay
+        _profUi += _profSw.Elapsed.TotalMilliseconds;
+
+        TickFps();
+    }
+
+    private void TickFps()
+    {
+        _fpsFrameCount++;
+        if (_fpsStopwatch.ElapsedMilliseconds < 500) return;
+        double fps = _fpsFrameCount * 1000.0 / _fpsStopwatch.ElapsedMilliseconds;
+        double n = Math.Max(1, _profSamples);
+        _lblFps.Text = $"FPS: {fps:F1}\nEmu:{_profEmu / n:F1} Aud:{_profAudio / n:F1} Blit:{_profBlit / n:F1} UI:{_profUi / n:F1} Gap:{_profGap / n:F1} ms";
+        _fpsFrameCount = 0;
+        _profEmu = _profAudio = _profBlit = _profUi = _profGap = 0;
+        _profSamples = 0;
+        _fpsStopwatch.Restart();
     }
 
     private void SaveState()
@@ -309,7 +445,6 @@ public sealed class MainForm : Form
             {
                 _bus.LoadState(dlg.FileName);
                 _palMenuItem!.Checked = _bus.TvSystem == TvSystem.Pal;
-                ApplyTvSystemTiming();
                 BlitFrame();
                 UpdateUi();
                 _lblStatus.Text = "State loaded.";
@@ -329,9 +464,8 @@ public sealed class MainForm : Form
             var cart = Core.Cartridge.Cartridge.Load(dlg.FileName);
             _bus.InsertCartridge(cart);
             RefreshDisasm();
-            // Reflect the auto-detected TV system in the checkbox without re-toggling timing.
+            // Reflect the auto-detected TV system in the checkbox.
             _palMenuItem!.Checked = _bus.TvSystem == TvSystem.Pal;
-            ApplyTvSystemTiming();
             UpdateUi();
             _lblStatus.Text = $"Loaded: {cart.FileName}  |  Mapper {cart.MapperId}  |  Mirror: {cart.Mirror}  |  {_bus.TvSystem}";
             Text = $"NES Emulator — {cart.FileName}";
@@ -345,32 +479,33 @@ public sealed class MainForm : Form
     private void TogglePalMode()
     {
         _bus.TvSystem = _palMenuItem!.Checked ? TvSystem.Pal : TvSystem.Ntsc;
-        ApplyTvSystemTiming();
         _lblStatus.Text = $"Switched to {_bus.TvSystem}.";
     }
 
-    // NTSC ~60.098 fps (16.6 ms/frame); PAL ~50.007 fps (20.0 ms/frame).
-    private void ApplyTvSystemTiming() =>
-        _runTimer.Interval = _bus.TvSystem == TvSystem.Pal ? 20 : 16;
-
-    private void RefreshDisasm() =>
+    private void RefreshDisasm()
+    {
         _disasm = _bus.Cpu.Disassemble(0x8000, 0xFFFF);
+        _disasmKeys = _disasm.Keys.OrderBy(k => k).ToList();
+    }
 
     // ── Frame blit ────────────────────────────────────────────────────────────
     private void BlitFrame()
     {
+        // uint[] and int[] share the same 4-byte layout — BlockCopy is a raw
+        // memcpy into a reused buffer, avoiding the per-frame array allocation
+        // and per-element delegate call that Array.ConvertAll incurred.
+        Buffer.BlockCopy(_bus.Ppu.FrameBuffer, 0, _blitBuffer, 0, _blitBuffer.Length * sizeof(int));
+
         var rect = new Rectangle(0, 0, 256, 240);
         var bmpData = _frameBitmap.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-        Marshal.Copy(
-            Array.ConvertAll(_bus.Ppu.FrameBuffer, v => (int)v),
-            0, bmpData.Scan0, _bus.Ppu.FrameBuffer.Length);
+        Marshal.Copy(_blitBuffer, 0, bmpData.Scan0, _blitBuffer.Length);
         _frameBitmap.UnlockBits(bmpData);
         _picVideo.Image = _frameBitmap;
-        _picVideo.Refresh();
+        _picVideo.Invalidate(); // let the normal paint cycle handle the repaint instead of forcing a synchronous one
     }
 
     // ── UI update ─────────────────────────────────────────────────────────────
-    private void UpdateUi()
+    private void UpdateUi(bool fullDebugRefresh = true)
     {
         var cpu = _bus.Cpu;
 
@@ -400,18 +535,20 @@ public sealed class MainForm : Form
 
         _lblCycles.Text = $"Cycles: {cpu.TotalCycles:N0}";
 
-        // Disassembler
-        if (_disasm.Count > 0)
+        // Disassembler and memory dump are debug-only views — skip them while
+        // running at full speed; only refresh when stepping or stopped.
+        if (!fullDebugRefresh) return;
+
+        if (_disasmKeys.Count > 0)
         {
-            var keys  = _disasm.Keys.OrderBy(k => k).ToList();
-            int pcIdx = keys.BinarySearch(cpu.PC);
+            int pcIdx = _disasmKeys.BinarySearch(cpu.PC);
             if (pcIdx < 0) pcIdx = ~pcIdx;
             int start = Math.Max(0, pcIdx - 8);
-            int end   = Math.Min(keys.Count - 1, pcIdx + 18);
+            int end   = Math.Min(_disasmKeys.Count - 1, pcIdx + 18);
 
             _lstDisasm.BeginUpdate();
             _lstDisasm.Items.Clear();
-            for (int i = start; i <= end; i++) _lstDisasm.Items.Add(_disasm[keys[i]]);
+            for (int i = start; i <= end; i++) _lstDisasm.Items.Add(_disasm[_disasmKeys[i]]);
             int vis = pcIdx - start;
             if (vis >= 0 && vis < _lstDisasm.Items.Count) _lstDisasm.SelectedIndex = vis;
             _lstDisasm.EndUpdate();
@@ -456,7 +593,13 @@ public sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _runTimer.Dispose(); _frameBitmap.Dispose(); _audio?.Dispose(); }
+        if (disposing)
+        {
+            _emuThreadRunning = false;
+            _emuThread?.Join(250);
+            _frameBitmap.Dispose();
+            _audio?.Dispose();
+        }
         base.Dispose(disposing);
     }
 }
